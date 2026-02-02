@@ -6,7 +6,7 @@ import numpy as np
 
 from distributions import sample_standard_normal, sample_bimodal
 from mlp import VelocityMLP
-from flow_matching import train_model
+from flow_matching import train_model, train_model_with_checkpoints
 from solver import integrate_flow
 from visualization import create_two_panel_figure, set_dark_style
 from interactive_viz import (
@@ -15,6 +15,16 @@ from interactive_viz import (
     create_dual_panel_interactive,
     create_linear_connections_plot,
 )
+from lecture_viz import (
+    create_step1_distributions,
+    create_step2_conditional_pair,
+    create_step3_path_animation,
+    create_step4_constant_velocity,
+    create_step5_training_samples,
+    create_step6_velocity_evolution,
+    create_step7_final_flow,
+)
+from lecture_content import get_step_content, get_total_steps
 from math_panel import get_full_explanation
 
 
@@ -62,6 +72,17 @@ def initialize_session_state():
     # Multi-select for Linear Connections mode
     if "selected_indices" not in st.session_state:
         st.session_state.selected_indices = []
+    # Lecture mode state
+    if "lecture_step" not in st.session_state:
+        st.session_state.lecture_step = 1
+    if "lecture_pair_idx" not in st.session_state:
+        st.session_state.lecture_pair_idx = 0
+    if "lecture_checkpoints" not in st.session_state:
+        st.session_state.lecture_checkpoints = {}
+    if "lecture_checkpoint_epochs" not in st.session_state:
+        st.session_state.lecture_checkpoint_epochs = []
+    if "lecture_current_epoch" not in st.session_state:
+        st.session_state.lecture_current_epoch = 0
 
 
 def main():
@@ -115,7 +136,7 @@ def main():
         st.header("Visualization")
         viz_mode = st.radio(
             "Mode",
-            ["Linear Connections", "Flow Trajectories", "Static (Matplotlib)"],
+            ["Lecture Walkthrough", "Linear Connections", "Flow Trajectories", "Static (Matplotlib)"],
             index=0,
         )
 
@@ -128,6 +149,25 @@ def main():
             n_neighbors = st.slider("Neighbors to highlight", 1, 20, 5)
         else:
             n_neighbors = 5
+
+        # Lecture mode step controls in sidebar
+        if viz_mode == "Lecture Walkthrough":
+            st.divider()
+            st.header("Lecture Controls")
+            n_steps = get_total_steps()
+            st.session_state.lecture_step = st.slider(
+                "Step", 1, n_steps, st.session_state.lecture_step
+            )
+
+            col_prev, col_next = st.columns(2)
+            with col_prev:
+                if st.button("← Previous", disabled=st.session_state.lecture_step <= 1):
+                    st.session_state.lecture_step -= 1
+                    st.rerun()
+            with col_next:
+                if st.button("Next →", disabled=st.session_state.lecture_step >= n_steps):
+                    st.session_state.lecture_step += 1
+                    st.rerun()
 
     # Initialize samples if not done
     if st.session_state.x0 is None:
@@ -177,8 +217,160 @@ def main():
     has_samples = st.session_state.x0 is not None and st.session_state.x1 is not None
     has_trajectories = st.session_state.trained and st.session_state.trajectories is not None
 
+    # Lecture Walkthrough mode
+    if viz_mode == "Lecture Walkthrough" and has_samples:
+        x0_np = st.session_state.x0.numpy()
+        x1_np = st.session_state.x1.numpy()
+
+        step = st.session_state.lecture_step
+        content = get_step_content(step)
+
+        # Step header
+        st.markdown(f"## {content['title']}")
+        st.markdown(f"*{content['subtitle']}*")
+
+        # Step-specific visualization
+        if step == 1:
+            # Step 1: Source & Target Distributions
+            fig = create_step1_distributions(x0_np, x1_np, mu1, mu2, sigma, weight)
+            st.plotly_chart(fig, use_container_width=True)
+
+        elif step == 2:
+            # Step 2: Conditional Pairs
+            st.session_state.lecture_pair_idx = st.slider(
+                "Select a pair to highlight",
+                0, len(x0_np) - 1,
+                st.session_state.lecture_pair_idx,
+                key="pair_slider_step2"
+            )
+            fig = create_step2_conditional_pair(
+                x0_np, x1_np, st.session_state.lecture_pair_idx,
+                mu1, mu2, sigma, weight
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        elif step == 3:
+            # Step 3: Conditional Path Animation
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                st.session_state.lecture_pair_idx = st.slider(
+                    "Pair", 0, len(x0_np) - 1, st.session_state.lecture_pair_idx, key="pair_slider_step3"
+                )
+            with col2:
+                t_anim = st.slider("Time t", 0.0, 1.0, 0.5, 0.01, key="t_slider_step3")
+
+            fig = create_step3_path_animation(
+                x0_np, x1_np, st.session_state.lecture_pair_idx, t_anim,
+                mu1, mu2, sigma, weight
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        elif step == 4:
+            # Step 4: Constant Velocity
+            st.session_state.lecture_pair_idx = st.slider(
+                "Select a pair", 0, len(x0_np) - 1, st.session_state.lecture_pair_idx, key="pair_slider_step4"
+            )
+            velocity = x1_np[st.session_state.lecture_pair_idx] - x0_np[st.session_state.lecture_pair_idx]
+            fig = create_step4_constant_velocity(
+                x0_np, x1_np, st.session_state.lecture_pair_idx
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            # Update explanation with actual velocity value
+            content['explanation'] = content['explanation'].format(velocity=velocity)
+
+        elif step == 5:
+            # Step 5: Training Data
+            n_samples = st.slider("Number of training samples to show", 100, 2000, 500, 100)
+            fig = create_step5_training_samples(x0_np, x1_np, n_samples)
+            st.plotly_chart(fig, use_container_width=True)
+
+        elif step == 6:
+            # Step 6: MLP Learning with checkpoints
+            if not st.session_state.lecture_checkpoints:
+                st.warning("Click **Train with Checkpoints** to see how the MLP learns!")
+                if st.button("🎓 Train with Checkpoints", type="primary"):
+                    st.session_state.model = VelocityMLP()
+                    checkpoint_epochs = [0, 10, 50, 100, 200, 500, int(epochs)]
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+
+                    def progress_cb(epoch, loss):
+                        progress_bar.progress((epoch + 1) / epochs)
+                        status_text.text(f"Epoch {epoch + 1}/{int(epochs)} | Loss: {loss:.6f}")
+
+                    with st.spinner("Training with checkpoints..."):
+                        losses, checkpoints = train_model_with_checkpoints(
+                            st.session_state.model,
+                            st.session_state.x0,
+                            st.session_state.x1,
+                            epochs=int(epochs),
+                            batch_size=batch_size,
+                            lr=lr,
+                            checkpoint_epochs=checkpoint_epochs,
+                            progress_callback=progress_cb,
+                        )
+
+                    st.session_state.losses = losses
+                    st.session_state.lecture_checkpoints = checkpoints
+                    st.session_state.lecture_checkpoint_epochs = sorted(checkpoints.keys())
+                    st.session_state.trained = True
+                    st.session_state.trajectories = integrate_flow(
+                        st.session_state.model,
+                        st.session_state.x0,
+                        st.session_state.t_span,
+                    )
+                    progress_bar.empty()
+                    status_text.empty()
+                    st.rerun()
+            else:
+                # Show velocity field evolution
+                available_epochs = st.session_state.lecture_checkpoint_epochs
+                epoch_idx = st.select_slider(
+                    "Training Epoch",
+                    options=range(len(available_epochs)),
+                    format_func=lambda i: f"Epoch {available_epochs[i]}",
+                    key="epoch_slider_step6"
+                )
+                selected_epoch = available_epochs[epoch_idx]
+
+                # Load checkpoint into a temporary model for visualization
+                temp_model = VelocityMLP()
+                temp_model.load_state_dict(st.session_state.lecture_checkpoints[selected_epoch])
+
+                # Get loss at this epoch
+                loss_at_epoch = st.session_state.losses[selected_epoch - 1] if selected_epoch > 0 else 0.0
+
+                fig = create_step6_velocity_evolution(
+                    temp_model, x0_np, x1_np, selected_epoch, loss_at_epoch
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Show loss value
+                st.metric("Loss at this epoch", f"{loss_at_epoch:.6f}")
+
+                # Mini loss chart
+                with st.expander("Training Loss Curve"):
+                    st.line_chart(st.session_state.losses[:selected_epoch] if selected_epoch > 0 else [0])
+
+        elif step == 7:
+            # Step 7: Final Flow
+            if not has_trajectories:
+                st.warning("Complete Step 6 (training) first to see the final flow!")
+            else:
+                fig = create_step7_final_flow(
+                    st.session_state.trajectories,
+                    x0_np, x1_np,
+                    st.session_state.t_span,
+                    mu1, mu2, sigma, weight
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+        # Explanation panel
+        st.markdown("---")
+        st.markdown(content['explanation'])
+
     # Linear Connections mode only needs samples, not training
-    if viz_mode == "Linear Connections" and has_samples:
+    elif viz_mode == "Linear Connections" and has_samples:
         x0_np = st.session_state.x0.numpy()
         x1_np = st.session_state.x1.numpy()
 

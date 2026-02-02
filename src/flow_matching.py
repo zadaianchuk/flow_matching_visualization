@@ -1,8 +1,9 @@
 """Conditional Flow Matching training logic."""
 
+import copy
 import torch
 import torch.nn.functional as F
-from typing import List, Callable
+from typing import List, Callable, Dict, Optional
 
 
 def sample_conditional_batch(
@@ -112,3 +113,60 @@ def train_model(
             progress_callback(epoch, loss)
 
     return losses
+
+
+def train_model_with_checkpoints(
+    model: torch.nn.Module,
+    x0: torch.Tensor,
+    x1: torch.Tensor,
+    epochs: int = 1000,
+    batch_size: int = 256,
+    lr: float = 1e-3,
+    checkpoint_epochs: Optional[List[int]] = None,
+    progress_callback: Callable[[int, float], None] = None,
+) -> tuple[List[float], Dict[int, dict]]:
+    """
+    Train the velocity field model using CFM with checkpoint saving.
+
+    Args:
+        model: Velocity field model
+        x0: Source samples
+        x1: Target samples
+        epochs: Number of training epochs
+        batch_size: Batch size
+        lr: Learning rate
+        checkpoint_epochs: List of epochs to save checkpoints (default: [0, 10, 50, 100, 500, epochs])
+        progress_callback: Optional callback(epoch, loss) for progress updates
+
+    Returns:
+        Tuple of (losses, checkpoints) where:
+        - losses: List of loss values per epoch
+        - checkpoints: Dict mapping epoch -> model state_dict
+    """
+    if checkpoint_epochs is None:
+        checkpoint_epochs = [0, 10, 50, 100, 500, epochs]
+
+    # Filter to only include epochs within training range
+    checkpoint_epochs = sorted(set(e for e in checkpoint_epochs if e <= epochs))
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    losses = []
+    checkpoints = {}
+
+    # Save initial state (epoch 0)
+    if 0 in checkpoint_epochs:
+        checkpoints[0] = copy.deepcopy(model.state_dict())
+
+    for epoch in range(epochs):
+        loss = train_step(model, optimizer, x0, x1, batch_size)
+        losses.append(loss)
+
+        # Save checkpoint if this epoch is in the list
+        epoch_num = epoch + 1  # epoch is 0-indexed, but we want 1-indexed for checkpoints
+        if epoch_num in checkpoint_epochs:
+            checkpoints[epoch_num] = copy.deepcopy(model.state_dict())
+
+        if progress_callback is not None:
+            progress_callback(epoch, loss)
+
+    return losses, checkpoints
