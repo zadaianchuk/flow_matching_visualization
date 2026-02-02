@@ -1,0 +1,1 @@
+Now I want to extend the project to include interactive visualization. I want to hover over the target distribution and show corresponding samples of trajectrories. 
